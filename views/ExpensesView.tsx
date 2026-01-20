@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { db } from '../services/database';
 import { Expense, User, Payment } from '../types';
-import { Plus, Tag, Calendar, User as UserIcon, MoreVertical, CreditCard, X, Trash2, Edit2, Check } from 'lucide-react';
+import { Plus, Tag, Calendar, User as UserIcon, MoreVertical, CreditCard, X, Trash2, Edit2, Check, ArrowRightCircle } from 'lucide-react';
 
 interface ExpensesViewProps {
   tripId: string;
@@ -11,6 +11,7 @@ interface ExpensesViewProps {
 const ExpensesView: React.FC<ExpensesViewProps> = ({ tripId }) => {
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [members, setMembers] = useState<User[]>([]);
+  const [payments, setPayments] = useState<Payment[]>([]);
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showSettlement, setShowSettlement] = useState(false);
@@ -37,6 +38,7 @@ const ExpensesView: React.FC<ExpensesViewProps> = ({ tripId }) => {
 
   const refreshData = () => {
     setExpenses(db.getExpenses(tripId).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
+    setPayments(db.getPayments(tripId));
   };
 
   const handleSaveExpense = (e: React.FormEvent) => {
@@ -61,6 +63,18 @@ const ExpensesView: React.FC<ExpensesViewProps> = ({ tripId }) => {
 
     refreshData();
     closeModal();
+  };
+
+  const handleSettleDebt = (fromId: string, toId: string, amount: number) => {
+    db.addPayment({
+      trip_id: tripId,
+      from_id: fromId,
+      to_id: toId,
+      amount: amount,
+      date: new Date().toISOString().split('T')[0]
+    });
+    refreshData();
+    calculateSettlement(); // Recalcular inmediatamente
   };
 
   const closeModal = () => {
@@ -97,21 +111,27 @@ const ExpensesView: React.FC<ExpensesViewProps> = ({ tripId }) => {
   };
 
   const calculateSettlement = () => {
-    // 1. Calculate how much each person paid and how much they owe
+    const currentPayments = db.getPayments(tripId);
+    const currentExpenses = db.getExpenses(tripId);
+    
     const balances: Record<string, number> = {};
     members.forEach(m => balances[m.id] = 0);
 
-    expenses.forEach(exp => {
-      // Payer gets positive balance (credited)
+    // Sumar gastos
+    currentExpenses.forEach(exp => {
       balances[exp.payer_id] += exp.amount;
-      // Each participant owes their share (debited)
       const share = exp.amount / exp.participants.length;
       exp.participants.forEach(pid => {
         balances[pid] -= share;
       });
     });
 
-    // 2. Separate creditors and debtors
+    // Ajustar por pagos ya realizados (liquidaciones manuales)
+    currentPayments.forEach(pay => {
+      balances[pay.from_id] += pay.amount; // El que pagó ahora "ha puesto más"
+      balances[pay.to_id] -= pay.amount;   // El que recibió ahora "debe más" o "le deben menos"
+    });
+
     let debtors = Object.entries(balances)
       .filter(([_, bal]) => bal < -0.01)
       .map(([id, bal]) => ({ id, balance: -bal }))
@@ -122,7 +142,6 @@ const ExpensesView: React.FC<ExpensesViewProps> = ({ tripId }) => {
       .map(([id, bal]) => ({ id, balance: bal }))
       .sort((a, b) => b.balance - a.balance);
 
-    // 3. Match them up
     const transactions: {from: string, to: string, amount: number}[] = [];
     let dIdx = 0, cIdx = 0;
 
@@ -186,16 +205,6 @@ const ExpensesView: React.FC<ExpensesViewProps> = ({ tripId }) => {
                       <span>•</span>
                       <span>{exp.date}</span>
                     </div>
-                    <div className="mt-3 flex -space-x-2">
-                      {exp.participants.map(pid => (
-                        <div key={pid} className="w-6 h-6 rounded-full bg-slate-100 border-2 border-white text-[8px] flex items-center justify-center font-black text-slate-500 shadow-sm" title={getUserName(pid)}>
-                          {getUserName(pid).charAt(0)}
-                        </div>
-                      ))}
-                      <div className="w-6 h-6 rounded-full bg-emerald-50 border-2 border-white text-[8px] flex items-center justify-center font-black text-emerald-600 shadow-sm">
-                        +{exp.participants.length}
-                      </div>
-                    </div>
                   </div>
                 </div>
                 <div className="text-right flex flex-col items-end">
@@ -225,18 +234,17 @@ const ExpensesView: React.FC<ExpensesViewProps> = ({ tripId }) => {
 
       {/* Settlement Section */}
       <div className="mt-10 bg-gradient-to-br from-emerald-600 to-emerald-800 p-6 rounded-[32px] text-white shadow-2xl shadow-emerald-100 relative overflow-hidden">
-        <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full -mr-16 -mt-16 blur-2xl"></div>
         <h3 className="font-black text-white text-base mb-2 flex items-center gap-2 uppercase tracking-widest">
-          <CreditCard size={18}/> Liquidación Provisional
+          <CreditCard size={18}/> Liquidación de Deudas
         </h3>
         <p className="text-[10px] text-emerald-100 mb-6 font-bold leading-relaxed opacity-80 uppercase tracking-tighter">
-          Calculamos quién debe pagar a quién para minimizar transferencias bancarias.
+          Calculamos quién debe pagar a quién descontando abonos ya realizados.
         </p>
         <button 
           onClick={calculateSettlement}
           className="w-full bg-white text-emerald-700 py-4 rounded-2xl text-xs font-black uppercase tracking-widest shadow-lg active:scale-95 transition-all"
         >
-          Ver Cuentas del Grupo
+          Saldar Cuentas del Grupo
         </button>
       </div>
 
@@ -252,25 +260,35 @@ const ExpensesView: React.FC<ExpensesViewProps> = ({ tripId }) => {
             </div>
             
             {settlementResult.length === 0 ? (
-              <p className="text-center py-10 font-bold text-slate-400">Todo el grupo está al día. ¡Sin deudas!</p>
+              <div className="text-center py-10 space-y-4">
+                <div className="w-20 h-20 bg-emerald-50 rounded-full flex items-center justify-center mx-auto text-emerald-500">
+                   <Check size={40} />
+                </div>
+                <p className="font-bold text-slate-400 uppercase text-xs tracking-widest">¡Todo el grupo está al día!</p>
+              </div>
             ) : (
               <div className="space-y-4">
                 {settlementResult.map((res, i) => (
-                  <div key={i} className="flex items-center justify-between bg-emerald-50/50 p-4 rounded-3xl border border-emerald-100/50">
-                    <div className="flex items-center gap-3">
-                       <div className="flex flex-col">
-                          <span className="text-[10px] font-black text-slate-400 uppercase">Debedor</span>
-                          <span className="text-sm font-black text-slate-800">{getUserName(res.from)}</span>
-                       </div>
-                       <div className="px-2 text-emerald-400">➔</div>
-                       <div className="flex flex-col">
-                          <span className="text-[10px] font-black text-slate-400 uppercase">Recibe</span>
-                          <span className="text-sm font-black text-slate-800">{getUserName(res.to)}</span>
-                       </div>
+                  <div key={i} className="flex flex-col bg-emerald-50/50 p-5 rounded-3xl border border-emerald-100/50">
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="flex flex-col">
+                        <span className="text-[10px] font-black text-slate-400 uppercase">Debedor</span>
+                        <span className="text-sm font-black text-slate-800">{getUserName(res.from)}</span>
+                      </div>
+                      <ArrowRightCircle className="text-emerald-300" size={24} />
+                      <div className="flex flex-col text-right">
+                        <span className="text-[10px] font-black text-slate-400 uppercase">Recibe</span>
+                        <span className="text-sm font-black text-slate-800">{getUserName(res.to)}</span>
+                      </div>
                     </div>
-                    <div className="text-right">
-                      <span className="text-xs font-bold text-emerald-600 block leading-none mb-1">PAGA</span>
-                      <span className="text-lg font-black text-slate-800 tracking-tight">${res.amount.toLocaleString('es-AR', { maximumFractionDigits: 0 })}</span>
+                    <div className="flex items-center justify-between pt-4 border-t border-emerald-100/30">
+                      <div className="text-lg font-black text-emerald-700 tracking-tight">${res.amount.toLocaleString('es-AR', { maximumFractionDigits: 0 })}</div>
+                      <button 
+                        onClick={() => handleSettleDebt(res.from, res.to, res.amount)}
+                        className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest shadow-md shadow-emerald-100 active:scale-95 transition-all"
+                      >
+                        Deuda Liquidada
+                      </button>
                     </div>
                   </div>
                 ))}

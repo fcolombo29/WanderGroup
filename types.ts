@@ -81,3 +81,21 @@ export interface Document {
   url: string;
   date: string;
 }
+
+export interface JournalEntry {
+  id: string;
+  trip_id: string;
+  user_id: string;
+  date: string;
+  content: string;
+  is_shared: boolean;
+  created_at: string;
+}
+
+export interface MapPin {
+  id: string;
+  trip_id: string;
+  name: string;
+  address: string;
+  category: string;
+}

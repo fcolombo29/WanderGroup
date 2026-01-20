@@ -1,5 +1,5 @@
 
-import { Trip, User, Expense, Activity, Document, Payment, TripStatus, TripRole } from '../types';
+import { Trip, User, Expense, Activity, Document, Payment, TripStatus, TripRole, JournalEntry, MapPin } from '../types';
 
 const STORAGE_KEYS = {
   USERS: 'wander_users',
@@ -9,6 +9,8 @@ const STORAGE_KEYS = {
   ACTIVITIES: 'wander_activities',
   DOCUMENTS: 'wander_documents',
   PAYMENTS: 'wander_payments',
+  JOURNAL: 'wander_journal',
+  PINS: 'wander_pins',
   CURRENT_USER: 'wander_current_user'
 };
 
@@ -58,17 +60,12 @@ const initMockData = () => {
         date: '2024-07-01',
         category: 'Comida',
         participants: ['user-1', 'user-2', 'user-3']
-      },
-      {
-        id: 'exp-2',
-        trip_id: 'trip-1',
-        payer_id: 'user-2',
-        amount: 25300,
-        description: 'Bebidas playa',
-        date: '2024-07-02',
-        category: 'Ocio',
-        participants: ['user-1', 'user-2']
       }
+    ]);
+
+    save(STORAGE_KEYS.PINS, [
+      { id: 'pin-1', trip_id: 'trip-1', name: 'Sagrada Familia', address: 'Sagrada Familia, Barcelona', category: 'Turismo' },
+      { id: 'pin-2', trip_id: 'trip-1', name: 'Playa de la Barceloneta', address: 'Barceloneta, Barcelona', category: 'Playa' }
     ]);
   }
 };
@@ -76,7 +73,7 @@ const initMockData = () => {
 initMockData();
 
 export const db = {
-  getCurrentUser: (): User | null => get(STORAGE_USER_KEY(), null),
+  getCurrentUser: (): User | null => get(STORAGE_KEYS.CURRENT_USER, null),
   
   updateCurrentUser: (updates: Partial<User>): User | null => {
     const user = db.getCurrentUser();
@@ -197,9 +194,48 @@ export const db = {
     const newPayment = { ...payment, id: Math.random().toString(36).substr(2, 9) };
     save(STORAGE_KEYS.PAYMENTS, [...payments, newPayment]);
     return newPayment;
+  },
+
+  getPins: (tripId: string): MapPin[] => {
+    return get<MapPin[]>(STORAGE_KEYS.PINS, []).filter(p => p.trip_id === tripId);
+  },
+
+  addPin: (pin: Omit<MapPin, 'id'>): MapPin => {
+    const pins = get<MapPin[]>(STORAGE_KEYS.PINS, []);
+    const newPin = { ...pin, id: Math.random().toString(36).substr(2, 9) };
+    save(STORAGE_KEYS.PINS, [...pins, newPin]);
+    return newPin;
+  },
+
+  deletePin: (id: string): void => {
+    const pins = get<MapPin[]>(STORAGE_KEYS.PINS, []);
+    save(STORAGE_KEYS.PINS, pins.filter(p => p.id !== id));
+  },
+
+  // Journal Methods
+  getJournalEntries: (tripId: string): JournalEntry[] => {
+    const journal = get<JournalEntry[]>(STORAGE_KEYS.JOURNAL, []);
+    const userId = db.getCurrentUser()?.id;
+    return journal.filter(e => e.trip_id === tripId && (e.user_id === userId || e.is_shared));
+  },
+
+  saveJournalEntry: (entry: Omit<JournalEntry, 'id' | 'created_at'>): JournalEntry => {
+    const journal = get<JournalEntry[]>(STORAGE_KEYS.JOURNAL, []);
+    const existingIndex = journal.findIndex(e => e.trip_id === entry.trip_id && e.user_id === entry.user_id && e.date === entry.date);
+    
+    if (existingIndex > -1) {
+      const updatedEntry = { ...journal[existingIndex], ...entry };
+      journal[existingIndex] = updatedEntry;
+      save(STORAGE_KEYS.JOURNAL, journal);
+      return updatedEntry;
+    } else {
+      const newEntry: JournalEntry = {
+        ...entry,
+        id: Math.random().toString(36).substr(2, 9),
+        created_at: new Date().toISOString()
+      };
+      save(STORAGE_KEYS.JOURNAL, [...journal, newEntry]);
+      return newEntry;
+    }
   }
 };
-
-function STORAGE_USER_KEY(): string {
-  return STORAGE_KEYS.CURRENT_USER;
-}
